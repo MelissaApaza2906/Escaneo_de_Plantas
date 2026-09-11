@@ -9,7 +9,7 @@ import {
   ShieldCheck, SlidersHorizontal, Sparkles, Sprout, Sun, Target, Trophy,
   UserPlus, UserRound, X,
 } from 'lucide-react';
-import { identifyPlant, getWikipediaSummary, type PlantIdentifyResult } from '@/lib/plant-identify';
+import { identifyPlant, getWikipediaDetails, getGbifHabitat, type PlantIdentifyResult, type WikipediaDetails } from '@/lib/plant-identify';
 
 type View = 'inicio' | 'galeria' | 'aprende' | 'laboratorio' | 'favoritas' | 'acerca' | 'contacto';
 type PlantType = 'Todos' | 'Árbol' | 'Arbusto' | 'Hierba' | 'Cactus' | 'Helecho';
@@ -310,10 +310,12 @@ function CameraDialog({ close, plants, onSelectPlant }: { close: () => void; pla
   const [identifying, setIdentifying] = useState(false);
   const [identifyError, setIdentifyError] = useState('');
   const [identifyResult, setIdentifyResult] = useState<PlantIdentifyResult | null>(null);
-  const [wikiSummary, setWikiSummary] = useState<string | null>(null);
+  const [wikiDetails, setWikiDetails] = useState<WikipediaDetails | null>(null);
   const [wikiLoading, setWikiLoading] = useState(false);
+  const [gbifHabitat, setGbifHabitat] = useState<string | null>(null);
+  const [gbifLoading, setGbifLoading] = useState(false);
 
-  const retake = () => { setCaptured(''); setCapturedBlob(null); setIdentifyResult(null); setIdentifyError(''); setWikiSummary(null); };
+  const retake = () => { setCaptured(''); setCapturedBlob(null); setIdentifyResult(null); setIdentifyError(''); setWikiDetails(null); setGbifHabitat(null); };
   const normalize = (value: string) => value.trim().toLowerCase();
   const findCatalogMatch = (scientificName: string) =>
     plants.find((plant) => normalize(plant.scientificName) === normalize(scientificName));
@@ -323,17 +325,27 @@ function CameraDialog({ close, plants, onSelectPlant }: { close: () => void; pla
     setIdentifying(true);
     setIdentifyError('');
     setIdentifyResult(null);
-    setWikiSummary(null);
+    setWikiDetails(null);
+    setGbifHabitat(null);
     try {
       const result = await identifyPlant(capturedBlob);
       setIdentifyResult(result);
       const topMatch = result.matches[0];
       const catalogMatch = topMatch ? findCatalogMatch(topMatch.scientificName) : undefined;
-      const hasDescription = result.enrichment?.description || catalogMatch?.description;
-      if (topMatch && !hasDescription) {
+      const hasDescription = Boolean(result.enrichment?.description || catalogMatch?.description);
+      const hasUtility = Boolean(result.enrichment?.utility || catalogMatch?.medicinalUses);
+
+      if (topMatch && (!hasDescription || !hasUtility)) {
         setWikiLoading(true);
-        setWikiSummary(await getWikipediaSummary(topMatch.scientificName));
+        const details = await getWikipediaDetails(topMatch.scientificName);
+        setWikiDetails(details);
         setWikiLoading(false);
+
+        if (!hasDescription && !details.description && !details.habitat) {
+          setGbifLoading(true);
+          setGbifHabitat(await getGbifHabitat(topMatch.scientificName));
+          setGbifLoading(false);
+        }
       }
     } catch (err) {
       setIdentifyError(err instanceof Error ? err.message : 'No se pudo identificar la planta.');
@@ -346,15 +358,17 @@ function CameraDialog({ close, plants, onSelectPlant }: { close: () => void; pla
   const topCatalogMatch = topMatch ? findCatalogMatch(topMatch.scientificName) : undefined;
   const enrichment = identifyResult?.enrichment ?? null;
   const resolvedCommonName = enrichment?.commonName || topCatalogMatch?.commonName || topMatch?.commonNames[0] || null;
-  const resolvedDescription = enrichment?.description || topCatalogMatch?.description || wikiSummary || null;
+  const resolvedDescription = enrichment?.description || topCatalogMatch?.description || wikiDetails?.description || null;
   const careDetails = [
     enrichment?.watering ? `Riego: ${enrichment.watering}` : null,
     enrichment?.sunlight ? `Luz: ${enrichment.sunlight}` : null,
     enrichment?.growth ? `Crecimiento: ${enrichment.growth}` : null,
   ].filter((line): line is string => Boolean(line));
-  const careFallback = !resolvedDescription && careDetails.length === 0 ? topCatalogMatch?.care ?? null : null;
-  const characteristics = [resolvedDescription, ...careDetails, careFallback].filter((part): part is string => Boolean(part));
-  const resolvedUtility = enrichment?.utility || topCatalogMatch?.medicinalUses || null;
+  const habitatLine = wikiDetails?.habitat || gbifHabitat || null;
+  const careFallback = !resolvedDescription && careDetails.length === 0 && !habitatLine ? topCatalogMatch?.care ?? null : null;
+  const characteristics = [resolvedDescription, ...careDetails, habitatLine, careFallback].filter((part): part is string => Boolean(part));
+  const resolvedUtility = enrichment?.utility || topCatalogMatch?.medicinalUses || wikiDetails?.uses || null;
+  const searchingMore = wikiLoading || gbifLoading;
 
   useEffect(() => {
     let active = true;
@@ -430,7 +444,7 @@ function CameraDialog({ close, plants, onSelectPlant }: { close: () => void; pla
               <p className="mt-1 text-xs italic text-[hsl(var(--muted-foreground))]">{topMatch.scientificName}</p>
               <div className="mt-4 space-y-1">
                 <p className="mono text-[9px] uppercase tracking-[.15em] text-[hsl(var(--muted-foreground))]">Características</p>
-                {wikiLoading ? (
+                {searchingMore ? (
                   <p className="text-sm text-[hsl(var(--muted-foreground))]">Buscando más información…</p>
                 ) : (
                   <p className="text-sm leading-6">{characteristics.length > 0 ? characteristics.join(' · ') : 'No disponible.'}</p>
@@ -438,7 +452,11 @@ function CameraDialog({ close, plants, onSelectPlant }: { close: () => void; pla
               </div>
               <div className="mt-3 space-y-1">
                 <p className="mono text-[9px] uppercase tracking-[.15em] text-[hsl(var(--muted-foreground))]">Utilidad</p>
-                <p className="text-sm leading-6">{resolvedUtility || 'No disponible.'}</p>
+                {searchingMore ? (
+                  <p className="text-sm text-[hsl(var(--muted-foreground))]">Buscando más información…</p>
+                ) : (
+                  <p className="text-sm leading-6">{resolvedUtility || 'No disponible.'}</p>
+                )}
               </div>
               {topCatalogMatch && <button type="button" onClick={() => onSelectPlant(topCatalogMatch)} data-testid="button-view-top-match" className="focus-ring mt-4 rounded-full bg-[hsl(var(--primary))] px-4 py-2 text-xs font-bold text-[hsl(var(--primary-foreground))]">Ver ficha completa</button>}
             </div>

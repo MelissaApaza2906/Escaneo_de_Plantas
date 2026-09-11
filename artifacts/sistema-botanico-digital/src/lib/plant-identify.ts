@@ -41,24 +41,108 @@ export async function identifyPlant(image: Blob, organ: PlantOrgan = 'auto'): Pr
   return response.json() as Promise<PlantIdentifyResult>;
 }
 
+export type WikipediaDetails = {
+  description: string | null;
+  habitat: string | null;
+  uses: string | null;
+};
+
+const WIKI_HABITAT_HEADING = /h[aá]bitat|distribuci[oó]n|morfolog[ií]a/i;
+const WIKI_USES_HEADING = /\buso|utiliza|aplicaci[oó]n|importancia econ[oó]mica|propiedad(?:es)? medicinal|medicinal|etnobot[aá]nic/i;
+
+function truncateWikiText(text: string, maxLength: number): string {
+  const trimmed = text.trim();
+  if (trimmed.length <= maxLength) return trimmed;
+  const cut = trimmed.slice(0, maxLength);
+  const lastPeriod = cut.lastIndexOf('. ');
+  const base = lastPeriod > maxLength * 0.5 ? cut.slice(0, lastPeriod + 1) : cut;
+  return `${base.trim()}…`;
+}
+
+function splitWikiSections(fullText: string): { intro: string; sections: { title: string; body: string }[] } {
+  const headingPattern = /\n={2,}\s*(.+?)\s*={2,}\n/g;
+  const matches = [...fullText.matchAll(headingPattern)];
+  if (matches.length === 0) return { intro: fullText.trim(), sections: [] };
+
+  const intro = fullText.slice(0, matches[0].index).trim();
+  const sections = matches.map((match, i) => {
+    const start = (match.index ?? 0) + match[0].length;
+    const end = i + 1 < matches.length ? (matches[i + 1].index ?? fullText.length) : fullText.length;
+    return { title: match[1], body: fullText.slice(start, end).trim() };
+  });
+  return { intro, sections };
+}
+
 /**
- * Last-resort fallback for a plant description when neither Perenual nor the
- * local catalog have data for a species: the intro paragraph of the Spanish
- * Wikipedia article, if one exists.
+ * Fallback plant info from the Spanish Wikipedia article, used when neither
+ * Perenual nor the local catalog have a field: the intro paragraph as a
+ * general description, plus (when present) the habitat/distribution section
+ * and a "uses"-like section (many plant articles have one, under varying
+ * headings — "Usos", "Uso en la medicina tradicional", "Importancia
+ * económica y cultural", etc., so this matches by keyword, not exact title).
  */
-export async function getWikipediaSummary(scientificName: string): Promise<string | null> {
+export async function getWikipediaDetails(scientificName: string): Promise<WikipediaDetails> {
+  const empty: WikipediaDetails = { description: null, habitat: null, uses: null };
   const title = scientificName.trim().replace(/\s+/g, '_');
-  const url = `https://es.wikipedia.org/w/api.php?action=query&titles=${encodeURIComponent(title)}&prop=extracts&exintro=true&explaintext=true&format=json&origin=*`;
+  const url = `https://es.wikipedia.org/w/api.php?action=query&titles=${encodeURIComponent(title)}&prop=extracts&explaintext=true&format=json&origin=*`;
+
   try {
-    const response = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    const response = await fetch(url, { signal: AbortSignal.timeout(6000) });
     const data = (await response.json()) as { query?: { pages?: Record<string, { extract?: string }> } };
     const pages = data.query?.pages ?? {};
+
     for (const pageId of Object.keys(pages)) {
       const extract = pages[pageId]?.extract?.trim();
-      if (extract) return extract;
+      if (!extract) continue;
+
+      const { intro, sections } = splitWikiSections(extract);
+      const habitatSection = sections.find((section) => WIKI_HABITAT_HEADING.test(section.title));
+      const usesSection = sections.find((section) => WIKI_USES_HEADING.test(section.title));
+
+      return {
+        description: intro ? truncateWikiText(intro, 500) : null,
+        habitat: habitatSection ? truncateWikiText(habitatSection.body, 400) : null,
+        uses: usesSection ? truncateWikiText(usesSection.body, 400) : null,
+      };
     }
   } catch {
-    // No Wikipedia summary available; caller shows "No disponible".
+    // No Wikipedia data available; caller shows "No disponible".
   }
-  return null;
+
+  return empty;
+}
+
+/**
+ * Last-resort habitat/distribution note from GBIF (no API key required) when
+ * neither Perenual, the local catalog, nor Wikipedia's habitat section have
+ * anything. GBIF has no care or "uses" data at all — it's occurrence and
+ * taxonomy only — so this only ever contributes to "características", never
+ * to "utilidad".
+ */
+export async function getGbifHabitat(scientificName: string): Promise<string | null> {
+  try {
+    const matchUrl = `https://api.gbif.org/v1/species/match?name=${encodeURIComponent(scientificName)}`;
+    const matchResponse = await fetch(matchUrl, { signal: AbortSignal.timeout(5000) });
+    const match = (await matchResponse.json()) as {
+      usageKey?: number;
+      matchType?: string;
+      confidence?: number;
+    };
+    if (!match.usageKey || match.matchType === 'NONE' || (match.confidence ?? 0) < 80) return null;
+
+    const occurrenceUrl = `https://api.gbif.org/v1/occurrence/search?taxonKey=${match.usageKey}&limit=0&facet=country&facetLimit=5`;
+    const occurrenceResponse = await fetch(occurrenceUrl, { signal: AbortSignal.timeout(5000) });
+    const occurrence = (await occurrenceResponse.json()) as {
+      facets?: { field: string; counts: { name: string; count: number }[] }[];
+    };
+    const codes = occurrence.facets?.find((facet) => facet.field === 'COUNTRY')?.counts.map((c) => c.name) ?? [];
+    if (codes.length === 0) return null;
+
+    const regionNames = new Intl.DisplayNames(['es'], { type: 'region' });
+    const names = codes.map((code) => regionNames.of(code) ?? code);
+
+    return `Registrada en ${names.join(', ')} (datos de GBIF).`;
+  } catch {
+    return null;
+  }
 }
