@@ -48,7 +48,9 @@ export type WikipediaDetails = {
 };
 
 const WIKI_HABITAT_HEADING = /h[aá]bitat|distribuci[oó]n|morfolog[ií]a/i;
-const WIKI_USES_HEADING = /\buso|utiliza|aplicaci[oó]n|importancia econ[oó]mica|propiedad(?:es)? medicinal|medicinal|etnobot[aá]nic/i;
+// "medicina" (not just "medicinal") also matches "Medicina tradicional" /
+// "Medicina popular", both very common section titles in plant articles.
+const WIKI_USES_HEADING = /\buso|utiliza|aplicaci[oó]n|importancia econ[oó]mica|medicina|etnobot[aá]nic/i;
 
 function truncateWikiText(text: string, maxLength: number): string {
   const trimmed = text.trim();
@@ -96,8 +98,14 @@ export async function getWikipediaDetails(scientificName: string): Promise<Wikip
       if (!extract) continue;
 
       const { intro, sections } = splitWikiSections(extract);
-      const habitatSection = sections.find((section) => WIKI_HABITAT_HEADING.test(section.title));
-      const usesSection = sections.find((section) => WIKI_USES_HEADING.test(section.title));
+      // Some headings (e.g. "Importancia económica y cultural") are empty
+      // containers whose real content lives in level-3 subsections that
+      // follow ("Medicina popular", "Usos culinarios", ...) — both are just
+      // "sections" once flattened, so skip empty ones rather than stopping
+      // at a matching title with nothing under it.
+      const hasBody = (section: { body: string }) => section.body.length > 0;
+      const habitatSection = sections.find((section) => WIKI_HABITAT_HEADING.test(section.title) && hasBody(section));
+      const usesSection = sections.find((section) => WIKI_USES_HEADING.test(section.title) && hasBody(section));
 
       return {
         description: intro ? truncateWikiText(intro, 500) : null,

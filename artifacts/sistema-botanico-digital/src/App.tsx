@@ -319,6 +319,12 @@ function CameraDialog({ close, plants, onSelectPlant }: { close: () => void; pla
   const normalize = (value: string) => value.trim().toLowerCase();
   const findCatalogMatch = (scientificName: string) =>
     plants.find((plant) => normalize(plant.scientificName) === normalize(scientificName));
+  // The ~100 auto-generated catalog entries (id "especie-N") have real
+  // commonName/scientificName but templated description/medicinalUses/care
+  // (identical boilerplate across all of them) — not real per-species data,
+  // so they must not count as "we already have this field" in the cascade.
+  // The ~18 hand-curated entries have semantic ids ("eucalipto", "kantuta"...).
+  const isCuratedCatalogEntry = (plant: Plant) => !plant.id.startsWith('especie-');
 
   const runIdentify = async () => {
     if (!capturedBlob) return;
@@ -332,8 +338,9 @@ function CameraDialog({ close, plants, onSelectPlant }: { close: () => void; pla
       setIdentifyResult(result);
       const topMatch = result.matches[0];
       const catalogMatch = topMatch ? findCatalogMatch(topMatch.scientificName) : undefined;
-      const hasDescription = Boolean(result.enrichment?.description || catalogMatch?.description);
-      const hasUtility = Boolean(result.enrichment?.utility || catalogMatch?.medicinalUses);
+      const curatedMatch = catalogMatch && isCuratedCatalogEntry(catalogMatch) ? catalogMatch : undefined;
+      const hasDescription = Boolean(result.enrichment?.description || curatedMatch?.description);
+      const hasUtility = Boolean(result.enrichment?.utility || curatedMatch?.medicinalUses);
 
       if (topMatch && (!hasDescription || !hasUtility)) {
         setWikiLoading(true);
@@ -356,18 +363,21 @@ function CameraDialog({ close, plants, onSelectPlant }: { close: () => void; pla
 
   const topMatch = identifyResult?.matches[0] ?? null;
   const topCatalogMatch = topMatch ? findCatalogMatch(topMatch.scientificName) : undefined;
+  const curatedCatalogMatch = topCatalogMatch && isCuratedCatalogEntry(topCatalogMatch) ? topCatalogMatch : undefined;
   const enrichment = identifyResult?.enrichment ?? null;
+  // commonName uses topCatalogMatch (curated or generated): the generated
+  // entries' name/scientific name are real, only their prose fields are boilerplate.
   const resolvedCommonName = enrichment?.commonName || topCatalogMatch?.commonName || topMatch?.commonNames[0] || null;
-  const resolvedDescription = enrichment?.description || topCatalogMatch?.description || wikiDetails?.description || null;
+  const resolvedDescription = enrichment?.description || curatedCatalogMatch?.description || wikiDetails?.description || null;
   const careDetails = [
     enrichment?.watering ? `Riego: ${enrichment.watering}` : null,
     enrichment?.sunlight ? `Luz: ${enrichment.sunlight}` : null,
     enrichment?.growth ? `Crecimiento: ${enrichment.growth}` : null,
   ].filter((line): line is string => Boolean(line));
   const habitatLine = wikiDetails?.habitat || gbifHabitat || null;
-  const careFallback = !resolvedDescription && careDetails.length === 0 && !habitatLine ? topCatalogMatch?.care ?? null : null;
+  const careFallback = !resolvedDescription && careDetails.length === 0 && !habitatLine ? curatedCatalogMatch?.care ?? null : null;
   const characteristics = [resolvedDescription, ...careDetails, habitatLine, careFallback].filter((part): part is string => Boolean(part));
-  const resolvedUtility = enrichment?.utility || topCatalogMatch?.medicinalUses || wikiDetails?.uses || null;
+  const resolvedUtility = enrichment?.utility || curatedCatalogMatch?.medicinalUses || wikiDetails?.uses || null;
   const searchingMore = wikiLoading || gbifLoading;
 
   useEffect(() => {
