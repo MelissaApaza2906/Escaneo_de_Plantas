@@ -1,0 +1,112 @@
+openapi: 3.1.0
+info:
+  # Do not change the title, if the title changes, the import paths will be broken
+  title: Api
+  version: 0.1.0
+  description: API specification
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - name: health
+    description: Health operations
+  - name: plant-identify
+    description: Plant identification via PlantNet
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      summary: Health check
+      description: Returns server health status
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+  /plant-identify:
+    post:
+      operationId: identifyPlant
+      tags: [plant-identify]
+      summary: Identify a plant from a photo
+      description: >-
+        Sends a plant photo to the PlantNet API and returns the most likely
+        species matches.
+      parameters:
+        - name: organ
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [leaf, flower, fruit, bark, habit, other, auto]
+            default: auto
+      requestBody:
+        required: true
+        content:
+          image/jpeg:
+            schema: { type: string, format: binary }
+          image/png:
+            schema: { type: string, format: binary }
+          image/webp:
+            schema: { type: string, format: binary }
+      responses:
+        "200":
+          description: Identification results (empty matches when nothing was recognized)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlantIdentifyResponse"
+        "400":
+          description: Missing or invalid image
+        "429":
+          description: PlantNet rate limit exceeded
+        "502":
+          description: PlantNet API unavailable or returned an error
+components:
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required:
+        - status
+    PlantIdentifyMatch:
+      type: object
+      properties:
+        scientificName:
+          type: string
+        family:
+          type: string
+          nullable: true
+        genus:
+          type: string
+          nullable: true
+        commonNames:
+          type: array
+          items:
+            type: string
+        score:
+          type: number
+      required:
+        - scientificName
+        - commonNames
+        - score
+    PlantIdentifyResponse:
+      type: object
+      properties:
+        bestMatch:
+          type: string
+          nullable: true
+        remainingRequests:
+          type: integer
+          nullable: true
+        matches:
+          type: array
+          items:
+            $ref: "#/components/schemas/PlantIdentifyMatch"
+      required:
+        - matches
+

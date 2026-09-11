@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "Sistema Botánico Digital"
+description = "Aplicación educativa para aprender a identificar más de 100 especies vegetales de Bolivia, con búsqueda, fichas detalladas, favoritos, autenticación local y quiz interactivo."
+version = "1.0.0"
+id = "artifacts/sistema-botanico-digital"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 20334
+
+[services.development]
+run = "pnpm --filter @workspace/sistema-botanico-digital run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/sistema-botanico-digital", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/sistema-botanico-digital/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "20334"
+BASE_PATH = "/"

@@ -1,0 +1,1 @@
+- [Imágenes botánicas remotas](image-source-fallback.md) — las consultas source.unsplash.com deben conservar un respaldo visual real porque pueden devolver imágenes rotas.
