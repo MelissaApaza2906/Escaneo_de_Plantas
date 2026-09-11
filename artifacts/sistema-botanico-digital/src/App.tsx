@@ -9,7 +9,7 @@ import {
   ShieldCheck, SlidersHorizontal, Sparkles, Sprout, Sun, Target, Trophy,
   UserPlus, UserRound, X,
 } from 'lucide-react';
-import { identifyPlant, type PlantIdentifyResult } from '@/lib/plant-identify';
+import { identifyPlant, getWikipediaSummary, type PlantIdentifyResult } from '@/lib/plant-identify';
 
 type View = 'inicio' | 'galeria' | 'aprende' | 'laboratorio' | 'favoritas' | 'acerca' | 'contacto';
 type PlantType = 'Todos' | 'Árbol' | 'Arbusto' | 'Hierba' | 'Cactus' | 'Helecho';
@@ -310,8 +310,10 @@ function CameraDialog({ close, plants, onSelectPlant }: { close: () => void; pla
   const [identifying, setIdentifying] = useState(false);
   const [identifyError, setIdentifyError] = useState('');
   const [identifyResult, setIdentifyResult] = useState<PlantIdentifyResult | null>(null);
+  const [wikiSummary, setWikiSummary] = useState<string | null>(null);
+  const [wikiLoading, setWikiLoading] = useState(false);
 
-  const retake = () => { setCaptured(''); setCapturedBlob(null); setIdentifyResult(null); setIdentifyError(''); };
+  const retake = () => { setCaptured(''); setCapturedBlob(null); setIdentifyResult(null); setIdentifyError(''); setWikiSummary(null); };
   const normalize = (value: string) => value.trim().toLowerCase();
   const findCatalogMatch = (scientificName: string) =>
     plants.find((plant) => normalize(plant.scientificName) === normalize(scientificName));
@@ -321,14 +323,38 @@ function CameraDialog({ close, plants, onSelectPlant }: { close: () => void; pla
     setIdentifying(true);
     setIdentifyError('');
     setIdentifyResult(null);
+    setWikiSummary(null);
     try {
-      setIdentifyResult(await identifyPlant(capturedBlob));
+      const result = await identifyPlant(capturedBlob);
+      setIdentifyResult(result);
+      const topMatch = result.matches[0];
+      const catalogMatch = topMatch ? findCatalogMatch(topMatch.scientificName) : undefined;
+      const hasDescription = result.enrichment?.description || catalogMatch?.description;
+      if (topMatch && !hasDescription) {
+        setWikiLoading(true);
+        setWikiSummary(await getWikipediaSummary(topMatch.scientificName));
+        setWikiLoading(false);
+      }
     } catch (err) {
       setIdentifyError(err instanceof Error ? err.message : 'No se pudo identificar la planta.');
     } finally {
       setIdentifying(false);
     }
   };
+
+  const topMatch = identifyResult?.matches[0] ?? null;
+  const topCatalogMatch = topMatch ? findCatalogMatch(topMatch.scientificName) : undefined;
+  const enrichment = identifyResult?.enrichment ?? null;
+  const resolvedCommonName = enrichment?.commonName || topCatalogMatch?.commonName || topMatch?.commonNames[0] || null;
+  const resolvedDescription = enrichment?.description || topCatalogMatch?.description || wikiSummary || null;
+  const careDetails = [
+    enrichment?.watering ? `Riego: ${enrichment.watering}` : null,
+    enrichment?.sunlight ? `Luz: ${enrichment.sunlight}` : null,
+    enrichment?.growth ? `Crecimiento: ${enrichment.growth}` : null,
+  ].filter((line): line is string => Boolean(line));
+  const careFallback = !resolvedDescription && careDetails.length === 0 ? topCatalogMatch?.care ?? null : null;
+  const characteristics = [resolvedDescription, ...careDetails, careFallback].filter((part): part is string => Boolean(part));
+  const resolvedUtility = enrichment?.utility || topCatalogMatch?.medicinalUses || null;
 
   useEffect(() => {
     let active = true;
@@ -395,9 +421,31 @@ function CameraDialog({ close, plants, onSelectPlant }: { close: () => void; pla
         <div className="border-t border-[hsl(var(--border))] p-6 md:p-8" data-testid="panel-identify-results">
           {identifyError && <p role="alert" className="text-sm text-[hsl(var(--destructive))]">{identifyError}</p>}
           {identifyResult && identifyResult.matches.length === 0 && <p className="text-sm text-[hsl(var(--muted-foreground))]">No se encontró una coincidencia confiable. Intenta con una foto más cercana de una hoja o flor.</p>}
+          {identifyResult && topMatch && (
+            <div className="mb-6 rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--secondary))] p-5" data-testid="panel-plant-details">
+              <div className="flex flex-wrap items-baseline justify-between gap-2">
+                <h3 className="display text-2xl">{resolvedCommonName || topMatch.scientificName}</h3>
+                <span className="mono text-xs text-[hsl(var(--accent))]">{Math.round(topMatch.score * 100)}% de coincidencia</span>
+              </div>
+              <p className="mt-1 text-xs italic text-[hsl(var(--muted-foreground))]">{topMatch.scientificName}</p>
+              <div className="mt-4 space-y-1">
+                <p className="mono text-[9px] uppercase tracking-[.15em] text-[hsl(var(--muted-foreground))]">Características</p>
+                {wikiLoading ? (
+                  <p className="text-sm text-[hsl(var(--muted-foreground))]">Buscando más información…</p>
+                ) : (
+                  <p className="text-sm leading-6">{characteristics.length > 0 ? characteristics.join(' · ') : 'No disponible.'}</p>
+                )}
+              </div>
+              <div className="mt-3 space-y-1">
+                <p className="mono text-[9px] uppercase tracking-[.15em] text-[hsl(var(--muted-foreground))]">Utilidad</p>
+                <p className="text-sm leading-6">{resolvedUtility || 'No disponible.'}</p>
+              </div>
+              {topCatalogMatch && <button type="button" onClick={() => onSelectPlant(topCatalogMatch)} data-testid="button-view-top-match" className="focus-ring mt-4 rounded-full bg-[hsl(var(--primary))] px-4 py-2 text-xs font-bold text-[hsl(var(--primary-foreground))]">Ver ficha completa</button>}
+            </div>
+          )}
           {identifyResult && identifyResult.matches.length > 0 && (
             <div className="space-y-3">
-              <p className="mono text-[10px] uppercase tracking-[.18em] text-[hsl(var(--primary))]">Coincidencias de PlantNet</p>
+              <p className="mono text-[10px] uppercase tracking-[.18em] text-[hsl(var(--primary))]">Otras coincidencias de PlantNet</p>
               {identifyResult.matches.map((match, i) => {
                 const catalogMatch = findCatalogMatch(match.scientificName);
                 return (

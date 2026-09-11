@@ -11,6 +11,7 @@ _Replace the heading above with the project's name, and this line with one sente
 - `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
 - Required env: `DATABASE_URL` — Postgres connection string
 - Required env (plant identification): `PLANTNET_API_KEY` — key from https://my.plantnet.org/ (set as a Replit Secret, never hardcoded). Optional: `PLANTNET_PROJECT` (default `all`) to scope identification to a regional PlantNet flora project.
+- Optional env (plant care/use enrichment): `PERENUAL_API_KEY` — key from https://perenual.com/docs/api (Replit Secret, never hardcoded). Without it, `/api/plant-identify` still works with PlantNet results alone (`enrichment` comes back `null`). The free Perenual tier is limited: `species-list` search often misses full two-word binomials (works better with the genus alone — the backend tries both) and only has a small species subset, and even a match frequently has `watering`/`sunlight`/`growth_rate`/`description` locked behind a paywall (returned as an "Upgrade Plan..." string, which the backend detects and treats as `null`). The frontend cascades: Perenual → local catalog → Wikipedia summary → "No disponible".
 
 ## Stack
 
