@@ -12,7 +12,7 @@ paths = [ "/" ]
 localPort = 20334
 
 [services.development]
-run = "pnpm --filter @workspace/sistema-botanico-digital run dev"
+run = "pnpm install --frozen-lockfile && pnpm --filter @workspace/sistema-botanico-digital run dev"
 
 [services.production]
 build = [ "pnpm", "--filter", "@workspace/sistema-botanico-digital", "run", "build" ]

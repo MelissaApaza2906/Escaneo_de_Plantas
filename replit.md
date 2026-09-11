@@ -39,7 +39,7 @@ _Populate as you build — explicit user instructions worth remembering across s
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- `[postMerge]` in `.replit` (which runs `scripts/post-merge.sh`, doing `pnpm install --frozen-lockfile`) only fires on `git merge` inside an existing Repl — **not** on a fresh "Import from GitHub". A fresh import skips it entirely, so each service's `[services.development].run` in its `artifact.toml` is prefixed with `pnpm install --frozen-lockfile &&` as a second safety net. If dependencies are genuinely out of sync with the lockfile, this fails loudly with pnpm's own error instead of silently trying to run a missing binary (e.g. `vite: not found`).
 
 ## Pointers
 
