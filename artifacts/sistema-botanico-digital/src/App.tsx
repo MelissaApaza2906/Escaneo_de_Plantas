@@ -22,53 +22,89 @@ type Plant = {
 type User = { name: string; email: string; password: string; institution?: string; course?: string; city?: string };
 
 const queryClient = new QueryClient();
-// Cada ficha usa una consulta propia en la fuente solicitada.
-const plantPhoto = (name: string) =>
-  `https://source.unsplash.com/600x400/?${name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-zA-Z0-9]+/g, '+').replace(/^\+|\+$/g, '').toLowerCase()}+bolivia`;
-const img = (index: number) =>
-  plantPhoto(['bosque selva Cochabamba', 'eucalipto', 'molle', 'aliso', 'quewina', 'kantuta', 'tarwi', 'achira'][index % 8]);
 const fallbackPhoto = 'https://images.pexels.com/photos/1903965/pexels-photo-1903965.jpeg?auto=compress&cs=tinysrgb&w=1200';
 const wikiFallback = 'https://upload.wikimedia.org/wikipedia/commons/a/ac/No_image_available.svg';
-async function getWikiImage(scientificName: string): Promise<string> {
-  const nombre = scientificName.trim().replace(/\s+/g, '_');
-  const url = `https://en.wikipedia.org/w/api.php?action=query&titles=${encodeURIComponent(nombre)}&prop=pageimages&format=json&pithumbsize=600&origin=*`;
+
+function chunk<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += size) chunks.push(items.slice(i, i + size));
+  return chunks;
+}
+
+// MediaWiki's action=query accepts multiple pipe-separated titles per request
+// (up to 50 for anonymous callers). Batching keeps this well under that and
+// turns what would be ~118 simultaneous requests into ~3 \u2014 querying every
+// plant individually in parallel reliably triggers Wikipedia's rate limit
+// (confirmed: only ~10% of 58 simultaneous single-title requests succeeded,
+// the rest got a plain-text "too many requests" body that fails to parse as
+// JSON), which is why some gallery photos loaded and others silently fell
+// back to the placeholder \u2014 not a broken URL, a self-inflicted rate limit.
+async function fetchWikiThumbnailsBatch(names: string[]): Promise<Map<string, string>> {
+  const result = new Map<string, string>();
+  if (names.length === 0) return result;
+
+  const url = `https://en.wikipedia.org/w/api.php?action=query&titles=${encodeURIComponent(names.join('|'))}&prop=pageimages&format=json&pithumbsize=600&origin=*`;
   try {
-    const response = await fetch(url, { signal: AbortSignal.timeout(5000) });
-    const data = await response.json() as { query?: { pages?: Record<string, { thumbnail?: { source?: string } }> } };
-    const pages = data.query?.pages ?? {};
-    for (const pageId of Object.keys(pages)) {
-      const source = pages[pageId]?.thumbnail?.source;
-      if (source) return source;
+    const response = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    const data = (await response.json()) as {
+      query?: {
+        pages?: Record<string, { title?: string; thumbnail?: { source?: string } }>;
+        normalized?: { from: string; to: string }[];
+      };
+    };
+
+    const canonicalToQueried = new Map<string, string>();
+    for (const name of names) canonicalToQueried.set(name.toLowerCase(), name);
+    for (const entry of data.query?.normalized ?? []) {
+      const queried = canonicalToQueried.get(entry.from.toLowerCase());
+      if (queried) canonicalToQueried.set(entry.to.toLowerCase(), queried);
+    }
+
+    for (const page of Object.values(data.query?.pages ?? {})) {
+      const source = page.thumbnail?.source;
+      if (!source || !page.title) continue;
+      const originalName = canonicalToQueried.get(page.title.toLowerCase());
+      if (originalName) result.set(originalName, source);
     }
   } catch {
-    // Se usa la imagen neutra cuando Wikipedia no tiene una miniatura disponible.
+    // Whole batch failed (network/rate-limit/parse error); those species
+    // just keep the neutral placeholder rather than a broken image.
   }
-  return wikiFallback;
+  return result;
 }
+
+async function getWikiImages(scientificNames: string[]): Promise<Map<string, string>> {
+  const batches = chunk(Array.from(new Set(scientificNames)), 40);
+  const batchResults = await Promise.all(batches.map((batch) => fetchWikiThumbnailsBatch(batch)));
+  const merged = new Map<string, string>();
+  for (const map of batchResults) for (const [name, url] of map) merged.set(name, url);
+  return merged;
+}
+
 const imageFallback = (event: React.SyntheticEvent<HTMLImageElement>) => {
   event.currentTarget.onerror = null;
   event.currentTarget.src = fallbackPhoto;
 };
 
 const corePlants: Plant[] = [
-  { id: 'eucalipto', commonName: 'Eucalipto', scientificName: 'Eucalyptus globulus', photo: img(1), description: 'Árbol aromático de hojas plateadas que perfuma las laderas y calles altas de Cochabamba.', family: 'Myrtaceae', habitat: 'Laderas templadas y valles interandinos', medicinalUses: 'Sus hojas se emplean tradicionalmente en vahos para aliviar la congestión.', care: 'Sol directo, suelo drenado y riego moderado cuando la superficie esté seca.', curiousFact: 'Puede superar los 50 metros y sus hojas juveniles tienen una forma muy distinta a las adultas.', type: 'Árbol', region: 'Cochabamba' },
-  { id: 'molle', commonName: 'Molle', scientificName: 'Schinus molle', photo: img(2), description: 'La copa llorona del molle es una silueta familiar en plazas, quebradas y caminos del valle.', family: 'Anacardiaceae', habitat: 'Valles secos y bosques abiertos', medicinalUses: 'La infusión de sus hojas forma parte de prácticas tradicionales para molestias digestivas.', care: 'Resiste sequía, necesita luz abundante y espacio para extender sus ramas.', curiousFact: 'Sus frutos rosados se parecen a pequeñas pimientas y tienen un aroma resinoso.', type: 'Árbol', region: 'Cochabamba' },
-  { id: 'aliso', commonName: 'Aliso', scientificName: 'Alnus acuminata', photo: img(3), description: 'Guardián de los ríos andinos: sus raíces protegen el suelo y acompañan cursos de agua.', family: 'Betulaceae', habitat: 'Riberas húmedas entre 1.500 y 3.500 m', medicinalUses: 'La corteza se ha usado de forma tradicional en cataplasmas para inflamaciones.', care: 'Prefiere humedad constante, sol suave y suelo profundo con materia orgánica.', curiousFact: 'En sus raíces alberga bacterias que ayudan a fijar nitrógeno y enriquecer el suelo.', type: 'Árbol', region: 'Cochabamba' },
-  { id: 'quewina', commonName: 'Quewiña', scientificName: 'Polylepis besseri', photo: img(4), description: 'Árbol nativo de corteza cobriza, símbolo de los bosques que sobreviven en las alturas bolivianas.', family: 'Rosaceae', habitat: 'Bosques altoandinos y laderas rocosas', medicinalUses: 'Sus hojas aparecen en preparaciones tradicionales para molestias respiratorias.', care: 'Clima frío, exposición luminosa y riego profundo pero espaciado.', curiousFact: 'Su corteza se desprende en capas finas que protegen al tronco de las heladas.', type: 'Árbol', region: 'Cochabamba' },
-  { id: 'kantuta', commonName: 'Kantuta', scientificName: 'Cantua buxifolia', photo: img(5), description: 'Flor nacional de Bolivia, cuyas corolas tubulares pintan de rojo, amarillo y verde los jardines andinos.', family: 'Polemoniaceae', habitat: 'Valles secos y matorrales de altura', medicinalUses: 'En la tradición local sus flores se valoran en infusiones suaves y aromáticas.', care: 'Sol de mañana, poda ligera después de florecer y drenaje generoso.', curiousFact: 'Sus flores cuelgan hacia abajo, una forma perfecta para recibir a los picaflores.', type: 'Arbusto', region: 'Bolivia' },
-  { id: 'tarwi', commonName: 'Tarwi', scientificName: 'Lupinus mutabilis', photo: img(6), description: 'Leguminosa andina de flores intensas, cultivada desde hace siglos en las montañas.', family: 'Fabaceae', habitat: 'Parcelas y pastizales entre 2.000 y 4.000 m', medicinalUses: 'Sus semillas son un alimento tradicional de alto valor proteico, luego de desamargarlas.', care: 'Sol pleno, riego regular al inicio y suelo suelto.', curiousFact: 'Sus raíces forman nódulos que capturan nitrógeno del aire y mejoran la tierra.', type: 'Hierba', region: 'Bolivia' },
-  { id: 'achira', commonName: 'Achira', scientificName: 'Canna indica', photo: img(7), description: 'Planta de hojas grandes y flores encendidas que aparece junto a acequias y huertos familiares.', family: 'Cannaceae', habitat: 'Bordes húmedos y jardines de valle', medicinalUses: 'Sus rizomas se consumen cocidos en algunas regiones y sus hojas se usan para envolver alimentos.', care: 'Riego frecuente, luz abundante y tierra rica.', curiousFact: 'Sus semillas negras y redondas fueron utilizadas antiguamente como cuentas ornamentales.', type: 'Hierba', region: 'Cochabamba' },
-  { id: 'cactus-cola', commonName: 'Cactus cola de zorro', scientificName: 'Cleistocactus samaipatanus', photo: img(0), description: 'Cactus columnar de flores rojas, especialista en sobrevivir al sol intenso y al suelo pedregoso.', family: 'Cactaceae', habitat: 'Quebradas secas y formaciones rocosas', medicinalUses: 'No se recomienda uso casero; su valor principal es ecológico y ornamental.', care: 'Sol directo, sustrato mineral y riegos muy espaciados.', curiousFact: 'Sus flores tubulares son polinizadas principalmente por picaflores.', type: 'Cactus', region: 'Bolivia' },
-  { id: 'chilca', commonName: 'Chilca', scientificName: 'Baccharis latifolia', photo: img(1), description: 'Arbusto resinoso que coloniza quebradas y bordes de camino con una fragancia verde y fresca.', family: 'Asteraceae', habitat: 'Quebradas húmedas y bordes de bosque', medicinalUses: 'Sus hojas se emplean en baños tradicionales para aliviar cansancio muscular.', care: 'Sol o semisombra, poda para compactar y riego moderado.', curiousFact: 'Sus semillas tienen pequeños pelos que les permiten viajar con el viento.', type: 'Arbusto', region: 'Cochabamba' },
-  { id: 'wira-wira', commonName: 'Wira wira', scientificName: 'Gnaphalium d. S.', photo: img(2), description: 'Hierba de aspecto plateado que guarda memoria de las alturas y de los remedios de abuela.', family: 'Asteraceae', habitat: 'Pajonales y laderas frías', medicinalUses: 'Se prepara tradicionalmente como infusión para la garganta y los cambios de clima.', care: 'Sustrato muy drenado, sol suave y poca humedad en invierno.', curiousFact: 'El vello de sus hojas refleja luz y ayuda a conservar calor en las noches frías.', type: 'Hierba', region: 'Altiplano' },
-  { id: 'retama', commonName: 'Retama', scientificName: 'Spartium junceum', photo: img(3), description: 'Arbusto de flores amarillas que ilumina los caminos del valle durante la primavera.', family: 'Fabaceae', habitat: 'Laderas soleadas y caminos rurales', medicinalUses: 'No debe consumirse sin orientación experta; algunas partes son tóxicas.', care: 'Sol pleno, suelo seco y podas de formación.', curiousFact: 'Sus ramas verdes realizan fotosíntesis incluso cuando pierde gran parte de sus hojas.', type: 'Arbusto', region: 'Cochabamba' },
-  { id: 'helecho-andino', commonName: 'Helecho andino', scientificName: 'Blechnum cordatum', photo: img(4), description: 'Frondas brillantes que crecen donde la sombra y la humedad encuentran un pequeño refugio.', family: 'Blechnaceae', habitat: 'Bosques de neblina y nacientes de agua', medicinalUses: 'Su uso medicinal no está recomendado sin identificación especializada.', care: 'Semisombra, humedad ambiental alta y sustrato siempre fresco.', curiousFact: 'No produce semillas: se reproduce mediante esporas diminutas en el reverso de sus frondas.', type: 'Helecho', region: 'Yungas' },
-  { id: 'jarca', commonName: 'Jarca', scientificName: 'Acacia visco', photo: img(5), description: 'Árbol espinoso de copa abierta, frecuente en valles secos y zonas de transición.', family: 'Fabaceae', habitat: 'Valles secos y matorral espinoso', medicinalUses: 'La corteza aparece en usos tradicionales, siempre bajo conocimiento comunitario.', care: 'Sol pleno, suelo arenoso y riego muy ocasional.', curiousFact: 'Sus flores globosas liberan un perfume dulce que atrae a numerosos insectos.', type: 'Árbol', region: 'Cochabamba' },
-  { id: 'tola', commonName: 'Tola', scientificName: 'Parastrephia lepidophylla', photo: img(6), description: 'Matorral aromático del altiplano que resiste viento, frío y meses completos sin lluvia.', family: 'Asteraceae', habitat: 'Puna seca y suelos arenosos', medicinalUses: 'Se usa tradicionalmente en sahúmos y bebidas calientes de montaña.', care: 'Sol pleno, drenaje excelente y muy poco riego.', curiousFact: 'Su resina protege las hojas del frío y reduce la pérdida de agua.', type: 'Arbusto', region: 'Altiplano' },
-  { id: 'chirimoya', commonName: 'Chirimoya', scientificName: 'Annona cherimola', photo: img(7), description: 'Frutal de valle con una pulpa cremosa y hojas suaves, cultivado en huertos de clima templado.', family: 'Annonaceae', habitat: 'Valles templados y huertos familiares', medicinalUses: 'Su fruto aporta fibra y vitaminas como parte de una alimentación variada.', care: 'Sol de mañana, riego profundo y protección contra heladas.', curiousFact: 'Sus flores son hermafroditas, pero suelen necesitar ayuda de insectos para polinizarse.', type: 'Árbol', region: 'Cochabamba' },
-  { id: 'tumbo', commonName: 'Tumbo', scientificName: 'Passiflora tripartita', photo: img(0), description: 'Enredadera de flores complejas y frutos alargados que trepa por cercos y soportes.', family: 'Passifloraceae', habitat: 'Valles húmedos y bordes de cultivo', medicinalUses: 'El fruto se disfruta en refrescos y preparaciones tradicionales.', care: 'Luz abundante, soporte vertical y riego constante.', curiousFact: 'Su flor parece una pequeña arquitectura y ofrece néctar a sus polinizadores.', type: 'Hierba', region: 'Cochabamba' },
-  { id: 'muña', commonName: 'Muña', scientificName: 'Minthostachys mollis', photo: img(1), description: 'Aromática de hojas pequeñas que desprende un perfume mentolado al tocarla.', family: 'Lamiaceae', habitat: 'Laderas secas y campos altoandinos', medicinalUses: 'La infusión se toma tradicionalmente después de las comidas.', care: 'Sol pleno, poda ligera y suelo con drenaje rápido.', curiousFact: 'Su aroma es una defensa natural contra algunos herbívoros.', type: 'Arbusto', region: 'Cochabamba' },
-  { id: 'oca', commonName: 'Oca', scientificName: 'Oxalis tuberosa', photo: img(2), description: 'Pequeña planta andina de flores amarillas y tubérculos de colores vivos.', family: 'Oxalidaceae', habitat: 'Cultivos de altura y suelos frescos', medicinalUses: 'El tubérculo es un alimento ancestral que se consume cocido o deshidratado.', care: 'Sol suave, riego regular y aporque durante el crecimiento.', curiousFact: 'La exposición al sol puede cambiar el sabor de sus tubérculos y volverlos más dulces.', type: 'Hierba', region: 'Andes' },
+  { id: 'eucalipto', commonName: 'Eucalipto', scientificName: 'Eucalyptus globulus', photo: wikiFallback, description: 'Árbol aromático de hojas plateadas que perfuma las laderas y calles altas de Cochabamba.', family: 'Myrtaceae', habitat: 'Laderas templadas y valles interandinos', medicinalUses: 'Sus hojas se emplean tradicionalmente en vahos para aliviar la congestión.', care: 'Sol directo, suelo drenado y riego moderado cuando la superficie esté seca.', curiousFact: 'Puede superar los 50 metros y sus hojas juveniles tienen una forma muy distinta a las adultas.', type: 'Árbol', region: 'Cochabamba' },
+  { id: 'molle', commonName: 'Molle', scientificName: 'Schinus molle', photo: wikiFallback, description: 'La copa llorona del molle es una silueta familiar en plazas, quebradas y caminos del valle.', family: 'Anacardiaceae', habitat: 'Valles secos y bosques abiertos', medicinalUses: 'La infusión de sus hojas forma parte de prácticas tradicionales para molestias digestivas.', care: 'Resiste sequía, necesita luz abundante y espacio para extender sus ramas.', curiousFact: 'Sus frutos rosados se parecen a pequeñas pimientas y tienen un aroma resinoso.', type: 'Árbol', region: 'Cochabamba' },
+  { id: 'aliso', commonName: 'Aliso', scientificName: 'Alnus acuminata', photo: wikiFallback, description: 'Guardián de los ríos andinos: sus raíces protegen el suelo y acompañan cursos de agua.', family: 'Betulaceae', habitat: 'Riberas húmedas entre 1.500 y 3.500 m', medicinalUses: 'La corteza se ha usado de forma tradicional en cataplasmas para inflamaciones.', care: 'Prefiere humedad constante, sol suave y suelo profundo con materia orgánica.', curiousFact: 'En sus raíces alberga bacterias que ayudan a fijar nitrógeno y enriquecer el suelo.', type: 'Árbol', region: 'Cochabamba' },
+  { id: 'quewina', commonName: 'Quewiña', scientificName: 'Polylepis besseri', photo: wikiFallback, description: 'Árbol nativo de corteza cobriza, símbolo de los bosques que sobreviven en las alturas bolivianas.', family: 'Rosaceae', habitat: 'Bosques altoandinos y laderas rocosas', medicinalUses: 'Sus hojas aparecen en preparaciones tradicionales para molestias respiratorias.', care: 'Clima frío, exposición luminosa y riego profundo pero espaciado.', curiousFact: 'Su corteza se desprende en capas finas que protegen al tronco de las heladas.', type: 'Árbol', region: 'Cochabamba' },
+  { id: 'kantuta', commonName: 'Kantuta', scientificName: 'Cantua buxifolia', photo: wikiFallback, description: 'Flor nacional de Bolivia, cuyas corolas tubulares pintan de rojo, amarillo y verde los jardines andinos.', family: 'Polemoniaceae', habitat: 'Valles secos y matorrales de altura', medicinalUses: 'En la tradición local sus flores se valoran en infusiones suaves y aromáticas.', care: 'Sol de mañana, poda ligera después de florecer y drenaje generoso.', curiousFact: 'Sus flores cuelgan hacia abajo, una forma perfecta para recibir a los picaflores.', type: 'Arbusto', region: 'Bolivia' },
+  { id: 'tarwi', commonName: 'Tarwi', scientificName: 'Lupinus mutabilis', photo: wikiFallback, description: 'Leguminosa andina de flores intensas, cultivada desde hace siglos en las montañas.', family: 'Fabaceae', habitat: 'Parcelas y pastizales entre 2.000 y 4.000 m', medicinalUses: 'Sus semillas son un alimento tradicional de alto valor proteico, luego de desamargarlas.', care: 'Sol pleno, riego regular al inicio y suelo suelto.', curiousFact: 'Sus raíces forman nódulos que capturan nitrógeno del aire y mejoran la tierra.', type: 'Hierba', region: 'Bolivia' },
+  { id: 'achira', commonName: 'Achira', scientificName: 'Canna indica', photo: wikiFallback, description: 'Planta de hojas grandes y flores encendidas que aparece junto a acequias y huertos familiares.', family: 'Cannaceae', habitat: 'Bordes húmedos y jardines de valle', medicinalUses: 'Sus rizomas se consumen cocidos en algunas regiones y sus hojas se usan para envolver alimentos.', care: 'Riego frecuente, luz abundante y tierra rica.', curiousFact: 'Sus semillas negras y redondas fueron utilizadas antiguamente como cuentas ornamentales.', type: 'Hierba', region: 'Cochabamba' },
+  { id: 'cactus-cola', commonName: 'Cactus cola de zorro', scientificName: 'Cleistocactus samaipatanus', photo: wikiFallback, description: 'Cactus columnar de flores rojas, especialista en sobrevivir al sol intenso y al suelo pedregoso.', family: 'Cactaceae', habitat: 'Quebradas secas y formaciones rocosas', medicinalUses: 'No se recomienda uso casero; su valor principal es ecológico y ornamental.', care: 'Sol directo, sustrato mineral y riegos muy espaciados.', curiousFact: 'Sus flores tubulares son polinizadas principalmente por picaflores.', type: 'Cactus', region: 'Bolivia' },
+  { id: 'chilca', commonName: 'Chilca', scientificName: 'Baccharis latifolia', photo: wikiFallback, description: 'Arbusto resinoso que coloniza quebradas y bordes de camino con una fragancia verde y fresca.', family: 'Asteraceae', habitat: 'Quebradas húmedas y bordes de bosque', medicinalUses: 'Sus hojas se emplean en baños tradicionales para aliviar cansancio muscular.', care: 'Sol o semisombra, poda para compactar y riego moderado.', curiousFact: 'Sus semillas tienen pequeños pelos que les permiten viajar con el viento.', type: 'Arbusto', region: 'Cochabamba' },
+  { id: 'wira-wira', commonName: 'Wira wira', scientificName: 'Gnaphalium d. S.', photo: wikiFallback, description: 'Hierba de aspecto plateado que guarda memoria de las alturas y de los remedios de abuela.', family: 'Asteraceae', habitat: 'Pajonales y laderas frías', medicinalUses: 'Se prepara tradicionalmente como infusión para la garganta y los cambios de clima.', care: 'Sustrato muy drenado, sol suave y poca humedad en invierno.', curiousFact: 'El vello de sus hojas refleja luz y ayuda a conservar calor en las noches frías.', type: 'Hierba', region: 'Altiplano' },
+  { id: 'retama', commonName: 'Retama', scientificName: 'Spartium junceum', photo: wikiFallback, description: 'Arbusto de flores amarillas que ilumina los caminos del valle durante la primavera.', family: 'Fabaceae', habitat: 'Laderas soleadas y caminos rurales', medicinalUses: 'No debe consumirse sin orientación experta; algunas partes son tóxicas.', care: 'Sol pleno, suelo seco y podas de formación.', curiousFact: 'Sus ramas verdes realizan fotosíntesis incluso cuando pierde gran parte de sus hojas.', type: 'Arbusto', region: 'Cochabamba' },
+  { id: 'helecho-andino', commonName: 'Helecho andino', scientificName: 'Blechnum cordatum', photo: wikiFallback, description: 'Frondas brillantes que crecen donde la sombra y la humedad encuentran un pequeño refugio.', family: 'Blechnaceae', habitat: 'Bosques de neblina y nacientes de agua', medicinalUses: 'Su uso medicinal no está recomendado sin identificación especializada.', care: 'Semisombra, humedad ambiental alta y sustrato siempre fresco.', curiousFact: 'No produce semillas: se reproduce mediante esporas diminutas en el reverso de sus frondas.', type: 'Helecho', region: 'Yungas' },
+  { id: 'jarca', commonName: 'Jarca', scientificName: 'Acacia visco', photo: wikiFallback, description: 'Árbol espinoso de copa abierta, frecuente en valles secos y zonas de transición.', family: 'Fabaceae', habitat: 'Valles secos y matorral espinoso', medicinalUses: 'La corteza aparece en usos tradicionales, siempre bajo conocimiento comunitario.', care: 'Sol pleno, suelo arenoso y riego muy ocasional.', curiousFact: 'Sus flores globosas liberan un perfume dulce que atrae a numerosos insectos.', type: 'Árbol', region: 'Cochabamba' },
+  { id: 'tola', commonName: 'Tola', scientificName: 'Parastrephia lepidophylla', photo: wikiFallback, description: 'Matorral aromático del altiplano que resiste viento, frío y meses completos sin lluvia.', family: 'Asteraceae', habitat: 'Puna seca y suelos arenosos', medicinalUses: 'Se usa tradicionalmente en sahúmos y bebidas calientes de montaña.', care: 'Sol pleno, drenaje excelente y muy poco riego.', curiousFact: 'Su resina protege las hojas del frío y reduce la pérdida de agua.', type: 'Arbusto', region: 'Altiplano' },
+  { id: 'chirimoya', commonName: 'Chirimoya', scientificName: 'Annona cherimola', photo: wikiFallback, description: 'Frutal de valle con una pulpa cremosa y hojas suaves, cultivado en huertos de clima templado.', family: 'Annonaceae', habitat: 'Valles templados y huertos familiares', medicinalUses: 'Su fruto aporta fibra y vitaminas como parte de una alimentación variada.', care: 'Sol de mañana, riego profundo y protección contra heladas.', curiousFact: 'Sus flores son hermafroditas, pero suelen necesitar ayuda de insectos para polinizarse.', type: 'Árbol', region: 'Cochabamba' },
+  { id: 'tumbo', commonName: 'Tumbo', scientificName: 'Passiflora tripartita', photo: wikiFallback, description: 'Enredadera de flores complejas y frutos alargados que trepa por cercos y soportes.', family: 'Passifloraceae', habitat: 'Valles húmedos y bordes de cultivo', medicinalUses: 'El fruto se disfruta en refrescos y preparaciones tradicionales.', care: 'Luz abundante, soporte vertical y riego constante.', curiousFact: 'Su flor parece una pequeña arquitectura y ofrece néctar a sus polinizadores.', type: 'Hierba', region: 'Cochabamba' },
+  { id: 'muña', commonName: 'Muña', scientificName: 'Minthostachys mollis', photo: wikiFallback, description: 'Aromática de hojas pequeñas que desprende un perfume mentolado al tocarla.', family: 'Lamiaceae', habitat: 'Laderas secas y campos altoandinos', medicinalUses: 'La infusión se toma tradicionalmente después de las comidas.', care: 'Sol pleno, poda ligera y suelo con drenaje rápido.', curiousFact: 'Su aroma es una defensa natural contra algunos herbívoros.', type: 'Arbusto', region: 'Cochabamba' },
+  { id: 'oca', commonName: 'Oca', scientificName: 'Oxalis tuberosa', photo: wikiFallback, description: 'Pequeña planta andina de flores amarillas y tubérculos de colores vivos.', family: 'Oxalidaceae', habitat: 'Cultivos de altura y suelos frescos', medicinalUses: 'El tubérculo es un alimento ancestral que se consume cocido o deshidratado.', care: 'Sol suave, riego regular y aporque durante el crecimiento.', curiousFact: 'La exposición al sol puede cambiar el sabor de sus tubérculos y volverlos más dulces.', type: 'Hierba', region: 'Andes' },
 ];
 
 const extraNames = [
@@ -79,7 +115,7 @@ const generatedPlants: Plant[] = extraNames.map(([commonName, scientificName, ty
   id: `especie-${i + 1}`,
   commonName,
   scientificName,
-  photo: img(i + 3),
+  photo: wikiFallback,
   description: `Especie presente en los paisajes vegetales de Bolivia, registrada por su relación con los suelos, el clima y las comunidades de ${i % 3 === 0 ? 'Cochabamba' : 'los Andes'}.`,
   family: ['Asteraceae', 'Fabaceae', 'Solanaceae', 'Lamiaceae', 'Rosaceae'][i % 5],
   habitat: ['Valles interandinos', 'Bosque montano', 'Laderas secas', 'Quebradas húmedas'][i % 4],
@@ -89,10 +125,7 @@ const generatedPlants: Plant[] = extraNames.map(([commonName, scientificName, ty
   type: type as Exclude<PlantType, 'Todos'>,
   region: i % 2 === 0 ? 'Cochabamba' : 'Bolivia',
 }));
- const plants: Plant[] = [...corePlants, ...generatedPlants].map((plant) => ({
-   ...plant,
-   photo: plantPhoto(plant.commonName),
- }));
+const plants: Plant[] = [...corePlants, ...generatedPlants];
 
 const questions = [
   { text: '¿Qué árbol protege las riberas de los ríos andinos?', options: ['Aliso', 'Tola', 'Tumbo', 'Retama'], answer: 'Aliso' },
@@ -151,8 +184,14 @@ function AppContent() {
   useEffect(() => {
     let cancelled = false;
     const loadWikiImages = async () => {
-      const entries = await Promise.all(plants.map(async (plant) => [plant.id, await getWikiImage(plant.scientificName)] as const));
-      if (!cancelled) setWikiImages(Object.fromEntries(entries));
+      const bySpecies = await getWikiImages(plants.map((plant) => plant.scientificName));
+      if (cancelled) return;
+      const byId: Record<string, string> = {};
+      for (const plant of plants) {
+        const source = bySpecies.get(plant.scientificName);
+        if (source) byId[plant.id] = source;
+      }
+      setWikiImages(byId);
     };
     void loadWikiImages();
     return () => { cancelled = true; };
@@ -261,7 +300,7 @@ function SectionHeading({ eyebrow, title, body, action }: { eyebrow: string; tit
 function HomeView({ navigate, plants, setSelectedPlant, toggleFavorite, favorites, openCamera }: { navigate: (v: View) => void; plants: Plant[]; setSelectedPlant: (p: Plant) => void; toggleFavorite: (id: string) => void; favorites: string[]; openCamera: () => void }) {
   return <div>
     <section className="relative isolate min-h-[570px] overflow-hidden bg-[hsl(159_35%_17%)]">
-       <img src={img(0)} onError={imageFallback} alt="Bosque húmedo de las montañas de Cochabamba" className="absolute inset-0 -z-20 size-full object-cover object-center opacity-70" /><div className="hero-wash absolute inset-0 -z-10" />
+       <img src={fallbackPhoto} onError={imageFallback} alt="Bosque húmedo de las montañas de Cochabamba" className="absolute inset-0 -z-20 size-full object-cover object-center opacity-70" /><div className="hero-wash absolute inset-0 -z-10" />
       <div className="mx-auto flex min-h-[570px] max-w-[1240px] items-center px-5 py-20 lg:px-10"><div className="max-w-2xl animate-rise text-[hsl(var(--sidebar-foreground))]">
         <div className="mb-6 flex items-center gap-3"><span className="h-px w-10 bg-[hsl(var(--accent))]" /><span className="mono text-[10px] uppercase tracking-[.24em] text-[hsl(var(--accent))]">Explora la flora de Bolivia</span></div>
         <h1 className="display max-w-2xl text-5xl leading-[.98] tracking-[-.03em] md:text-7xl">Cada hoja guarda una historia.</h1>
