@@ -11,6 +11,18 @@ env = { "CI" = "true" }
 [workflows]
 runButton = "Project"
 
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "pnpm install --frozen-lockfile && PORT=8080 pnpm --filter @workspace/api-server run dev"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "pnpm install --frozen-lockfile && PORT=20334 BASE_PATH=/ pnpm --filter @workspace/sistema-botanico-digital run dev"
+
 [agent]
 stack = "PNPM_WORKSPACE"
 expertMode = true

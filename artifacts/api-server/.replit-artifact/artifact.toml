@@ -12,6 +12,9 @@ paths = ["/api"]
 [services.development]
 run = "pnpm install --frozen-lockfile && pnpm --filter @workspace/api-server run dev"
 
+[services.env]
+PORT = "8080"
+
 [services.production]
 
 [services.production.build]
