@@ -52,3 +52,7 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+
+# Local dev TLS certificates (self-signed, machine-specific)
+.certs/
+*.pem

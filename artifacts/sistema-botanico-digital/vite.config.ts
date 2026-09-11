@@ -1,3 +1,4 @@
+import fs from 'fs';
 import path from 'path';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
@@ -26,6 +27,18 @@ if (!basePath) {
     'BASE_PATH environment variable is required but was not provided.',
   );
 }
+
+// Opt-in HTTPS for local dev (e.g. to test camera capture from a phone on the
+// same LAN, since getUserMedia requires a secure context outside localhost).
+// Not used on Replit: its platform router terminates TLS at the edge already.
+const devKeyPath = path.resolve(import.meta.dirname, '.certs/dev-key.pem');
+const devCertPath = path.resolve(import.meta.dirname, '.certs/dev-cert.pem');
+const devHttps =
+  process.env.VITE_DEV_HTTPS === '1' &&
+  fs.existsSync(devKeyPath) &&
+  fs.existsSync(devCertPath)
+    ? { key: fs.readFileSync(devKeyPath), cert: fs.readFileSync(devCertPath) }
+    : undefined;
 
 export default defineConfig({
   base: basePath,
@@ -69,6 +82,7 @@ export default defineConfig({
     strictPort: true,
     host: '0.0.0.0',
     allowedHosts: true,
+    https: devHttps,
     fs: {
       strict: true,
     },
