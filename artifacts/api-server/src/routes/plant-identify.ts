@@ -68,7 +68,7 @@ router.post(
     const extension = contentType.includes("png") ? "png" : contentType.includes("webp") ? "webp" : "jpg";
 
     const form = new FormData();
-    form.append("images", new Blob([imageBuffer], { type: contentType }), `capture.${extension}`);
+    form.append("images", new Blob([Uint8Array.from(imageBuffer)], { type: contentType }), `capture.${extension}`);
     form.append("organs", organ);
 
     const url = new URL(`https://my-api.plantnet.org/v2/identify/${PLANTNET_PROJECT}`);

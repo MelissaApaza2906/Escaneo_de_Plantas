@@ -72,6 +72,14 @@ export default defineConfig({
     fs: {
       strict: true,
     },
+    // Replit's platform router maps "/api" to the api-server service in dev and prod.
+    // Locally there is no such router, so proxy "/api" to the api-server dev port ourselves.
+    proxy: {
+      '/api': {
+        target: `http://localhost:${process.env.API_PORT || 8080}`,
+        changeOrigin: true,
+      },
+    },
   },
   preview: {
     port,
